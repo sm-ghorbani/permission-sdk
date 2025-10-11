@@ -6,16 +6,7 @@ This module provides HTTP communication with retry logic and error handling.
 from typing import Any
 from urllib.parse import urljoin
 
-import requests
-from requests.adapters import HTTPAdapter
-from requests.exceptions import (
-    ConnectionError as RequestsConnectionError,
-)
-from requests.exceptions import (
-    RequestException,
-    Timeout,
-)
-from urllib3.util.retry import Retry
+import httpx
 
 from permission_sdk.config import SDKConfig
 from permission_sdk.exceptions import (
@@ -42,7 +33,7 @@ class HTTPTransport:
 
     Attributes:
         config: SDK configuration
-        session: Requests session with connection pooling
+        client: HTTPX client with connection pooling
 
     Example:
         >>> config = SDKConfig(base_url="https://api.example.com", api_key="key")
@@ -60,51 +51,41 @@ class HTTPTransport:
             >>> transport = HTTPTransport(config)
         """
         self.config = config
-        self.session = self._create_session()
+        self.client = self._create_client()
 
-    def _create_session(self) -> requests.Session:
-        """Create configured requests session with retry logic.
+    def _create_client(self) -> httpx.Client:
+        """Create configured HTTP client with connection pooling.
 
         Returns:
-            Configured requests.Session instance
+            Configured httpx.Client instance
 
         Note:
-            The session includes:
+            The client includes:
             - Authentication headers
             - Connection pooling
-            - Retry configuration with exponential backoff
+            - Timeout configuration
         """
-        session = requests.Session()
+        headers = {
+            "X-API-Key": self.config.api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
 
-        # Set authentication header
-        session.headers.update(
-            {
-                "X-API-Key": self.config.api_key,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
+        # Configure connection limits for pooling
+        limits = httpx.Limits(
+            max_keepalive_connections=self.config.pool_connections,
+            max_connections=self.config.pool_maxsize,
         )
 
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=self.config.max_retries,
-            backoff_factor=self.config.retry_backoff,
-            status_forcelist=list(self.config.retry_on_status),
-            allowed_methods=["GET", "POST", "DELETE", "PUT", "PATCH"],
-            raise_on_status=False,  # We'll handle status codes manually
+        # Create client with configuration
+        client = httpx.Client(
+            headers=headers,
+            timeout=httpx.Timeout(self.config.timeout),
+            limits=limits,
+            follow_redirects=True,
         )
 
-        # Configure HTTP adapter with retry and pooling
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_maxsize=self.config.pool_maxsize,
-            pool_connections=self.config.pool_connections,
-        )
-
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-
-        return session
+        return client
 
     def request(
         self,
@@ -142,37 +123,68 @@ class HTTPTransport:
         """
         url = urljoin(self.config.base_url, endpoint)
 
-        try:
-            response = self.session.request(
-                method=method,
-                url=url,
-                json=json,
-                params=params,
-                timeout=self.config.timeout,
-            )
+        # Implement retry logic manually
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                response = self.client.request(
+                    method=method,
+                    url=url,
+                    json=json,
+                    params=params,
+                )
 
-            # Handle different status codes
-            self._handle_response(response)
+                # Handle different status codes
+                self._handle_response(response)
 
-            # Return JSON response
-            if response.status_code == 204:  # No content
-                return {}
+                # Return JSON response
+                if response.status_code == 204:  # No content
+                    return {}
 
-            return response.json()
+                return response.json()
 
-        except Timeout as e:
-            raise TimeoutError(
-                f"Request timed out after {self.config.timeout} seconds",
-                timeout=float(self.config.timeout),
-            ) from e
+            except httpx.TimeoutException as e:
+                if attempt == self.config.max_retries:
+                    raise TimeoutError(
+                        f"Request timed out after {self.config.timeout} seconds",
+                        timeout=float(self.config.timeout),
+                    ) from e
+                # Retry on timeout
+                self._wait_for_retry(attempt)
 
-        except RequestsConnectionError as e:
-            raise NetworkError(f"Failed to connect to {self.config.base_url}: {e}") from e
+            except (httpx.ConnectError, httpx.NetworkError) as e:
+                if attempt == self.config.max_retries:
+                    raise NetworkError(
+                        f"Failed to connect to {self.config.base_url}: {e}"
+                    ) from e
+                # Retry on network error
+                self._wait_for_retry(attempt)
 
-        except RequestException as e:
-            raise NetworkError(f"Network error occurred: {e}") from e
+            except httpx.HTTPStatusError as e:
+                # Check if status code is retryable
+                if (
+                    e.response.status_code in self.config.retry_on_status
+                    and attempt < self.config.max_retries
+                ):
+                    self._wait_for_retry(attempt)
+                    continue
+                # Re-raise for non-retryable errors
+                self._handle_response(e.response)
 
-    def _handle_response(self, response: requests.Response) -> None:
+        # Should not reach here, but for type safety
+        raise ServerError("Maximum retries exceeded")
+
+    def _wait_for_retry(self, attempt: int) -> None:
+        """Wait before retrying with exponential backoff.
+
+        Args:
+            attempt: Current attempt number (0-indexed)
+        """
+        import time
+
+        wait_time = self.config.retry_backoff * (self.config.retry_multiplier**attempt)
+        time.sleep(wait_time)
+
+    def _handle_response(self, response: httpx.Response) -> None:
         """Handle HTTP response and raise appropriate exceptions.
 
         Args:
@@ -245,7 +257,7 @@ class HTTPTransport:
         )
 
     def close(self) -> None:
-        """Close the HTTP session and cleanup connections.
+        """Close the HTTP client and cleanup connections.
 
         This should be called when the transport is no longer needed to
         properly cleanup connection pools.
@@ -258,7 +270,7 @@ class HTTPTransport:
             ... finally:
             ...     transport.close()
         """
-        self.session.close()
+        self.client.close()
 
     def __enter__(self) -> "HTTPTransport":
         """Context manager entry.

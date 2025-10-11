@@ -28,28 +28,30 @@ config = SDKConfig(
     api_key="your-api-key"
 )
 
-with PermissionClient(config) as client:
-    # Grant a permission
-    assignment = client.grant_permission(
-        subject="user:123",
-        scope="documents.management",
-        action="edit",
-        tenant_id="org:456"
-    )
-    print(f"Permission granted: {assignment.assignment_id}")
+# Simple usage - cleanup happens automatically
+client = PermissionClient(config)
 
-    # Check if user has permission
-    allowed = client.check_permission(
-        subjects=["user:123", "role:editor"],
-        scope="documents.management",
-        action="edit",
-        tenant_id="org:456"
-    )
+# Grant a permission
+assignment = client.grant_permission(
+    subject="user:123",
+    scope="documents.management",
+    action="edit",
+    tenant_id="org:456"
+)
+print(f"Permission granted: {assignment.assignment_id}")
 
-    if allowed:
-        print("Access granted!")
-    else:
-        print("Access denied!")
+# Check if user has permission
+allowed = client.check_permission(
+    subjects=["user:123", "role:editor"],
+    scope="documents.management",
+    action="edit",
+    tenant_id="org:456"
+)
+
+if allowed:
+    print("Access granted!")
+else:
+    print("Access denied!")
 ```
 
 ## Configuration
@@ -345,15 +347,26 @@ config = SDKConfig(
 
 ## Best Practices
 
-### 1. Use Context Managers
+### 1. Resource Management
 
-Always use context managers to ensure proper cleanup:
+The client automatically cleans up connections when garbage collected, but you can explicitly manage resources for better control:
 
 ```python
+# Simple usage - automatic cleanup on garbage collection
+client = PermissionClient(config)
+client.check_permission(...)
+
+# Context manager - explicit cleanup (recommended for production)
 with PermissionClient(config) as client:
-    # Your code here
-    pass
-# Connections are automatically cleaned up
+    client.check_permission(...)
+# Connections are cleaned up immediately
+
+# Manual cleanup - for long-running applications
+client = PermissionClient(config)
+try:
+    client.check_permission(...)
+finally:
+    client.close()
 ```
 
 ### 2. Batch Operations
@@ -444,8 +457,7 @@ black --check permission_sdk
 ## Requirements
 
 - Python >= 3.11
-- requests >= 2.31.0
-- httpx >= 0.25.0 (for async client)
+- httpx >= 0.25.0
 - pydantic >= 2.0.0
 
 ## License

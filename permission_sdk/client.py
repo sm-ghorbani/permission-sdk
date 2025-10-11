@@ -752,8 +752,9 @@ class PermissionClient:
     def close(self) -> None:
         """Close the client and cleanup connections.
 
-        This should be called when the client is no longer needed to
-        properly cleanup connection pools.
+        This is optional - connections are automatically cleaned up when the
+        client is garbage collected. However, explicit cleanup is recommended
+        for production use to ensure immediate resource release.
 
         Example:
             >>> client = PermissionClient(config)
