@@ -1,0 +1,8 @@
+{
+  "include": ["permission_sdk", "examples", "tests"],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false,
+  "reportOptionalMemberAccess": false,
+  "reportGeneralTypeIssues": false
+}

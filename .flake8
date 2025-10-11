@@ -1,0 +1,5 @@
+[flake8]
+# Flake8 is disabled in favor of Ruff
+# This file exists to prevent Flake8 from running if it's installed
+exclude = *
+ignore = *
