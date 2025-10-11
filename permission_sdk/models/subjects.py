@@ -28,7 +28,7 @@ class Subject(BaseModel):
 
     Example:
         >>> subject = Subject(
-        ...     id="123",
+        ...     id=123,
         ...     identifier="user:john.doe",
         ...     subject_type="user",
         ...     subject_id="john.doe",
@@ -39,7 +39,7 @@ class Subject(BaseModel):
         ... )
     """
 
-    id: str = Field(..., description="Internal ID")
+    id: int = Field(..., description="Internal ID")
     identifier: str = Field(..., description="Subject identifier")
     subject_type: str = Field(..., description="Subject type")
     subject_id: str = Field(..., description="Subject ID portion")

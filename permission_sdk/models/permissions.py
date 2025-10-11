@@ -144,12 +144,14 @@ class CheckResult(BaseModel):
     Attributes:
         allowed: Whether the permission is allowed
         matched_subject: Subject that matched (if any)
+        matched_assignment_id: Assignment ID that granted access (if any)
         check_id: Correlation ID from the request (for batch checks)
 
     Example:
         >>> result = CheckResult(
         ...     allowed=True,
         ...     matched_subject="user:123",
+        ...     matched_assignment_id=456,
         ...     check_id="check-1"
         ... )
         >>> if result.allowed:
@@ -158,6 +160,7 @@ class CheckResult(BaseModel):
 
     allowed: bool = Field(..., description="Whether permission is allowed")
     matched_subject: str | None = Field(default=None, description="Subject that matched")
+    matched_assignment_id: int | None = Field(default=None, description="Assignment ID that granted access")
     check_id: str | None = Field(default=None, description="Correlation ID")
 
 
@@ -177,7 +180,7 @@ class PermissionAssignment(BaseModel):
 
     Example:
         >>> assignment = PermissionAssignment(
-        ...     assignment_id="perm_123",
+        ...     assignment_id=123,
         ...     subject="user:123",
         ...     scope="documents.management",
         ...     action="edit",
@@ -185,7 +188,7 @@ class PermissionAssignment(BaseModel):
         ... )
     """
 
-    assignment_id: str = Field(..., description="Assignment ID")
+    assignment_id: int = Field(..., description="Assignment ID")
     subject: str = Field(..., description="Subject identifier")
     scope: str = Field(..., description="Scope identifier")
     action: str = Field(..., description="Permission action")
@@ -232,7 +235,7 @@ class PermissionDetail(BaseModel):
 
     Example:
         >>> detail = PermissionDetail(
-        ...     assignment_id="perm_123",
+        ...     assignment_id=123,
         ...     subject="user:123",
         ...     subject_type="user",
         ...     subject_display_name="John Doe",
@@ -244,7 +247,7 @@ class PermissionDetail(BaseModel):
         ... )
     """
 
-    assignment_id: str = Field(..., description="Assignment ID")
+    assignment_id: int = Field(..., description="Assignment ID")
     subject: str = Field(..., description="Subject identifier")
     subject_type: str = Field(..., description="Subject type")
     subject_display_name: str | None = Field(default=None, description="Subject display name")

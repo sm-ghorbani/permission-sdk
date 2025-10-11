@@ -26,7 +26,7 @@ class Scope(BaseModel):
 
     Example:
         >>> scope = Scope(
-        ...     id="123",
+        ...     id=123,
         ...     identifier="documents.management",
         ...     display_name="Document Management",
         ...     description="Permissions for managing documents",
@@ -35,7 +35,7 @@ class Scope(BaseModel):
         ... )
     """
 
-    id: str = Field(..., description="Internal ID")
+    id: int = Field(..., description="Internal ID")
     identifier: str = Field(..., description="Scope identifier")
     display_name: str | None = Field(default=None, description="Display name")
     description: str | None = Field(default=None, description="Description")
