@@ -43,11 +43,6 @@ dev = [
     "types-requests>=2.31.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/example/permission-sdk"
-Documentation = "https://permission-sdk.readthedocs.io"
-Repository = "https://github.com/example/permission-sdk"
-Issues = "https://github.com/example/permission-sdk/issues"
 
 [tool.setuptools]
 packages = ["permission_sdk", "permission_sdk.models"]
