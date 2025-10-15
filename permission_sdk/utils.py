@@ -10,7 +10,7 @@ from permission_sdk.exceptions import ValidationError
 
 # Regular expressions for validation
 SUBJECT_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+:[a-zA-Z0-9_@.\-]+$")
-SCOPE_PATTERN = re.compile(r"^[a-z0-9_.-]+$")
+SCOPE_PATTERN = re.compile(r"^[a-z0-9_.:.-]+$")
 ACTION_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 
@@ -63,7 +63,7 @@ def validate_scope_identifier(identifier: str) -> None:
     - Lowercase letters
     - Numbers
     - Dots (.) for hierarchical scopes
-    - Hyphens (-) and underscores (_)
+    - Hyphens (-), underscores (_), and colons (:)
 
     Args:
         identifier: Scope identifier to validate
@@ -74,6 +74,7 @@ def validate_scope_identifier(identifier: str) -> None:
     Example:
         >>> validate_scope_identifier("documents.management")  # Valid
         >>> validate_scope_identifier("users_admin")           # Valid
+        >>> validate_scope_identifier("api:v1.users")          # Valid
         >>> validate_scope_identifier("Invalid.Scope")         # Raises ValidationError
     """
     if not identifier:
@@ -83,7 +84,7 @@ def validate_scope_identifier(identifier: str) -> None:
         raise ValidationError(
             f"Invalid scope identifier format: '{identifier}'. "
             "Scope must be lowercase and contain only letters, "
-            "numbers, dots, hyphens, and underscores",
+            "numbers, dots, hyphens, underscores, and colons",
             field="scope",
         )
 

@@ -68,6 +68,26 @@ class TestGrantRequest:
         assert grant.expires_at == expires_at
         assert grant.metadata == metadata
 
+    def test_grant_request_with_colon_in_scope(self) -> None:
+        """Test that scope identifiers can contain colons."""
+        grant = GrantRequest(
+            subject="user:alice",
+            scope="api:v1.documents",
+            action="read",
+        )
+
+        assert grant.scope == "api:v1.documents"
+
+    def test_grant_request_with_multiple_colons_in_scope(self) -> None:
+        """Test that scope identifiers can contain multiple colons."""
+        grant = GrantRequest(
+            subject="user:alice",
+            scope="service:namespace:resource.read",
+            action="read",
+        )
+
+        assert grant.scope == "service:namespace:resource.read"
+
     def test_grant_request_validation_errors(self) -> None:
         """Test validation errors for invalid grant requests."""
         # Missing required field
@@ -107,6 +127,16 @@ class TestRevokeRequest:
         assert revoke.scope == "docs.mgmt"
         assert revoke.action == "delete"
 
+    def test_revoke_request_with_colon_in_scope(self) -> None:
+        """Test that scope identifiers can contain colons."""
+        revoke = RevokeRequest(
+            subject="user:alice",
+            scope="api:v2.documents",
+            action="write",
+        )
+
+        assert revoke.scope == "api:v2.documents"
+
 
 class TestCheckRequest:
     """Tests for CheckRequest model."""
@@ -133,6 +163,16 @@ class TestCheckRequest:
         )
 
         assert check.check_id == "check-123"
+
+    def test_check_request_with_colon_in_scope(self) -> None:
+        """Test that scope identifiers can contain colons."""
+        check = CheckRequest(
+            subjects=["user:alice", "role:admin"],
+            scope="service:api.permissions",
+            action="manage",
+        )
+
+        assert check.scope == "service:api.permissions"
 
     def test_check_request_validation(self) -> None:
         """Test validation for check requests."""
