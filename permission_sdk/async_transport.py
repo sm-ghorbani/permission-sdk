@@ -1,13 +1,18 @@
 """Async HTTP transport layer for the Permission SDK.
 
-This module provides asynchronous HTTP communication with retry logic and error handling.
+This module provides asynchronous HTTP communication
+with retry logic, error handling,
+and optional caching with invalidation support.
 """
 
+import logging
 from typing import Any
 from urllib.parse import urljoin
 
 import httpx
 
+from permission_sdk.cache.permission_cache import PermissionCacheManager
+from permission_sdk.cache.provider import create_cache_service_async
 from permission_sdk.config import SDKConfig
 from permission_sdk.exceptions import (
     AuthenticationError,
@@ -19,9 +24,11 @@ from permission_sdk.exceptions import (
     ValidationError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class AsyncHTTPTransport:
-    """Async HTTP transport layer with automatic retry logic.
+    """Async HTTP transport layer with automatic retry logic and caching.
 
     This class handles all asynchronous HTTP communication with the Permission
     Service API, including:
@@ -30,10 +37,12 @@ class AsyncHTTPTransport:
     - Automatic retries with exponential backoff
     - Connection pooling
     - Error handling and exception mapping
+    - Optional caching with automatic invalidation
 
     Attributes:
         config: SDK configuration
         client: HTTPX async client with connection pooling
+        cache_manager: Optional permission cache manager for caching
 
     Example:
         >>> config = SDKConfig(base_url="https://api.example.com", api_key="key")
@@ -52,6 +61,8 @@ class AsyncHTTPTransport:
         """
         self.config = config
         self.client = self._create_client()
+        self.cache_manager: PermissionCacheManager | None = None
+        self._cache_initialized = False
 
     def _create_client(self) -> httpx.AsyncClient:
         """Create configured async HTTP client with retry logic.
@@ -87,6 +98,74 @@ class AsyncHTTPTransport:
 
         return client
 
+    async def _ensure_cache_initialized(self) -> None:
+        """Initialize cache if enabled and not yet initialized.
+
+        This is called lazily on first request
+        to avoid blocking initialization.
+        """
+        if self._cache_initialized:
+            return
+
+        if self.config.cache_enabled:
+            try:
+                cache_service = await create_cache_service_async(self.config)
+                self.cache_manager = PermissionCacheManager(
+                    cache_service,
+                    self.config.cache_prefix,
+                )
+                logger.debug("Cache initialized successfully")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to initialize cache: {e}."
+                    " Continuing without cache.",
+                )
+                self.cache_manager = None
+
+        self._cache_initialized = True
+
+    def _is_check_request(self, method: str, endpoint: str) -> bool:
+        """Check if this is a permission check request.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+
+        Returns:
+            True if this is a check or check-many request
+        """
+        return method == "POST" and (
+            "/permissions/check" in endpoint or "/permissions/check-many" in endpoint
+        )
+
+    def _is_grant_request(self, method: str, endpoint: str) -> bool:
+        """Check if this is a grant request.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+
+        Returns:
+            True if this is a grant or grant-many request
+        """
+        return method == "POST" and (
+            "/permissions/grant" in endpoint or "/permissions/grant-many" in endpoint
+        )
+
+    def _is_revoke_request(self, method: str, endpoint: str) -> bool:
+        """Check if this is a revoke request.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+
+        Returns:
+            True if this is a revoke or revoke-many request
+        """
+        return method == "POST" and (
+            "/permissions/revoke" in endpoint or "/permissions/revoke-many" in endpoint
+        )
+
     async def request(
         self,
         method: str,
@@ -121,6 +200,173 @@ class AsyncHTTPTransport:
             ...     json={"subject": "user:123", "scope": "docs", "action": "read"}
             ... )
         """
+        # Initialize cache if enabled (lazy initialization)
+        await self._ensure_cache_initialized()
+
+        # Route request based on type
+        if self._is_check_request(method, endpoint):
+            return await self._handle_check_request(method, endpoint, json, params)
+        elif self._is_grant_request(method, endpoint) or self._is_revoke_request(method, endpoint):
+            return await self._handle_mutation_request(method, endpoint, json, params)
+        else:
+            # Pass through for other requests
+            return await self._do_request(method, endpoint, json, params)
+
+    async def _handle_check_request(
+        self,
+        method: str,
+        endpoint: str,
+        json_data: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Handle check permission request with caching.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+            json_data: Request JSON body
+            params: Query parameters
+
+        Returns:
+            Response data
+        """
+        # If cache not enabled or no data, pass through
+        if not self.cache_manager or not json_data:
+            return await self._do_request(method, endpoint, json_data, params)
+
+        # Handle single check
+        if "/permissions/check-many" not in endpoint:
+            subjects = json_data.get("subjects", [])
+            scope = json_data.get("scope")
+            action = json_data.get("action")
+            tenant_id = json_data.get("tenant_id")
+            object_id = json_data.get("object_id")
+
+            # Try cache first
+            try:
+                cached_result = await self.cache_manager.get_check_result(
+                    subjects, scope, action, tenant_id, object_id
+                )
+
+                if cached_result is not None:
+                    logger.debug(
+                        f"Cache hit for check: {subjects} -> {scope}.{action}",
+                        extra={"cache_hit": True},
+                    )
+                    return {"allowed": cached_result}
+            except Exception as e:
+                logger.warning(f"Cache get failed: {e}. Falling back to API call.")
+
+        # Cache miss or batch check - call API
+        result = await self._do_request(method, endpoint, json_data, params)
+
+        # Cache the result for single checks
+        if "/permissions/check-many" not in endpoint and self.cache_manager:
+            try:
+                await self.cache_manager.set_check_result(
+                    subjects,
+                    scope,
+                    action,
+                    result.get("allowed", False),
+                    tenant_id,
+                    object_id,
+                    ttl=self.config.cache_ttl,
+                )
+                logger.debug(f"Cached check result for {subjects} -> {scope}.{action}")
+            except Exception as e:
+                logger.warning(f"Failed to cache check result: {e}")
+
+        return result
+
+    async def _handle_mutation_request(
+        self,
+        method: str,
+        endpoint: str,
+        json_data: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Handle grant/revoke request with cache invalidation.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+            json_data: Request JSON body
+            params: Query parameters
+
+        Returns:
+            Response data
+        """
+        # Call API first
+        result = await self._do_request(method, endpoint, json_data, params)
+
+        # Invalidate cache if enabled
+        if self.cache_manager and json_data:
+            try:
+                await self._invalidate_cache_for_mutation(endpoint, json_data)
+            except Exception as e:
+                logger.warning(f"Cache invalidation failed: {e}")
+
+        return result
+
+    async def _invalidate_cache_for_mutation(
+        self, endpoint: str, json_data: dict[str, Any]
+    ) -> None:
+        """Invalidate cache entries affected by grant/revoke.
+
+        Args:
+            endpoint: API endpoint
+            json_data: Request JSON body
+        """
+        if not self.cache_manager:
+            return
+
+        # Handle batch operations
+        if "/grant-many" in endpoint:
+            grants = json_data.get("grants", [])
+            subjects = list({g.get("subject") for g in grants if g.get("subject")})
+            if subjects:
+                invalidated = await self.cache_manager.invalidate_subjects(subjects)
+                logger.debug(
+                    f"Invalidated {invalidated} cache keys for batch grant ({len(subjects)} subjects)"
+                )
+
+        elif "/revoke-many" in endpoint:
+            revocations = json_data.get("revocations", [])
+            subjects = list({r.get("subject") for r in revocations if r.get("subject")})
+            if subjects:
+                invalidated = await self.cache_manager.invalidate_subjects(subjects)
+                logger.debug(
+                    f"Invalidated {invalidated} cache keys for batch revoke ({len(subjects)} subjects)"
+                )
+
+        # Handle single operations
+        elif "/grant" in endpoint or "/revoke" in endpoint:
+            subject = json_data.get("subject")
+            if subject:
+                invalidated = await self.cache_manager.invalidate_subject(subject)
+                logger.debug(f"Invalidated {invalidated} cache keys for subject: {subject}")
+
+    async def _do_request(
+        self,
+        method: str,
+        endpoint: str,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Perform the actual HTTP request with retry logic.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+            json: Request JSON body
+            params: Query parameters
+
+        Returns:
+            Response data
+
+        Raises:
+            Various SDK exceptions based on response status
+        """
         url = urljoin(self.config.base_url, endpoint)
 
         # Implement retry logic manually since httpx doesn't have built-in retry
@@ -153,9 +399,7 @@ class AsyncHTTPTransport:
 
             except (httpx.ConnectError, httpx.NetworkError) as e:
                 if attempt == self.config.max_retries:
-                    raise NetworkError(
-                        f"Failed to connect to {self.config.base_url}: {e}"
-                    ) from e
+                    raise NetworkError(f"Failed to connect to {self.config.base_url}: {e}") from e
                 # Retry on network error
                 await self._wait_for_retry(attempt)
 
@@ -181,9 +425,7 @@ class AsyncHTTPTransport:
         """
         import asyncio
 
-        wait_time = (
-            self.config.retry_backoff * (self.config.retry_multiplier**attempt)
-        )
+        wait_time = self.config.retry_backoff * (self.config.retry_multiplier**attempt)
         await asyncio.sleep(wait_time)
 
     def _handle_response(self, response: httpx.Response) -> None:
@@ -262,7 +504,7 @@ class AsyncHTTPTransport:
         """Close the async HTTP client and cleanup connections.
 
         This should be called when the transport is no longer needed to
-        properly cleanup connection pools.
+        properly cleanup connection pools and cache connections.
 
         Example:
             >>> transport = AsyncHTTPTransport(config)
@@ -273,6 +515,13 @@ class AsyncHTTPTransport:
             ...     await transport.close()
         """
         await self.client.aclose()
+
+        # Close cache if initialized
+        if self.cache_manager:
+            try:
+                await self.cache_manager.close()
+            except Exception as e:
+                logger.warning(f"Failed to close cache: {e}")
 
     async def __aenter__(self) -> "AsyncHTTPTransport":
         """Async context manager entry.

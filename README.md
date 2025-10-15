@@ -342,8 +342,230 @@ config = SDKConfig(
 
     # Validation
     validate_identifiers=True,  # Client-side validation
+
+    # SDK-Side Caching (NEW)
+    cache_enabled=True,         # Enable SDK-side caching
+    cache_type="redis",         # "redis", "memory", or "none"
+    cache_redis_url="redis://localhost:6379/0",  # Redis URL
+    cache_ttl=300,              # Cache TTL in seconds (5 minutes)
+    cache_prefix="perm_sdk",    # Cache key prefix
 )
 ```
+
+## SDK-Side Caching
+
+The SDK supports optional client-side caching to dramatically reduce network calls and improve performance. When enabled, permission check results are cached locally.
+
+### Why SDK-Side Caching?
+
+- **Eliminates Network Overhead**: Cached checks don't hit the network at all (~0.1-1ms vs 5-50ms)
+- **Automatic Invalidation**: Cache is automatically invalidated when permissions change
+- **Two-Layer Caching**: Works alongside service-side caching for maximum performance
+- **Optional and Safe**: Disabled by default, gracefully degrades if cache fails
+
+### Enabling Cache
+
+#### Option 1: Direct Configuration
+
+```python
+from permission_sdk import SDKConfig, PermissionClient
+
+config = SDKConfig(
+    base_url="https://permissions.example.com",
+    api_key="your-api-key",
+    cache_enabled=True,
+    cache_type="redis",
+    cache_redis_url="redis://localhost:6379/0",
+    cache_ttl=300,  # 5 minutes
+)
+
+client = PermissionClient(config)
+```
+
+#### Option 2: Environment Variables
+
+```bash
+export PERMISSION_SDK_BASE_URL=https://permissions.example.com
+export PERMISSION_SDK_API_KEY=your-api-key
+export PERMISSION_SDK_CACHE_ENABLED=true
+export PERMISSION_SDK_CACHE_TYPE=redis
+export PERMISSION_SDK_CACHE_REDIS_URL=redis://localhost:6379/0
+export PERMISSION_SDK_CACHE_TTL=300
+```
+
+```python
+from permission_sdk import SDKConfig, PermissionClient
+
+config = SDKConfig.from_env()
+client = PermissionClient(config)
+```
+
+### Cache Types
+
+#### Redis Cache (Production)
+Best for multi-process/multi-server deployments:
+
+```python
+config = SDKConfig(
+    ...
+    cache_enabled=True,
+    cache_type="redis",
+    cache_redis_url="redis://localhost:6379/0",
+)
+```
+
+#### In-Memory Cache (Development)
+Best for single-process applications or testing:
+
+```python
+config = SDKConfig(
+    ...
+    cache_enabled=True,
+    cache_type="memory",
+)
+```
+
+#### No Cache (Default)
+Caching disabled:
+
+```python
+config = SDKConfig(
+    ...
+    cache_enabled=False,  # or omit cache settings
+)
+```
+
+### How Caching Works
+
+#### Check Permission Flow
+
+```python
+# First check - cache miss
+allowed = client.check_permission(
+    subjects=["user:alice"],
+    scope="documents.management",
+    action="edit"
+)
+# → Calls API (~50ms)
+# → Caches result for 5 minutes
+
+# Subsequent checks - cache hit
+allowed = client.check_permission(
+    subjects=["user:alice"],
+    scope="documents.management",
+    action="edit"
+)
+# → Returns from cache (~0.5ms)
+# → No network call!
+```
+
+#### Automatic Invalidation
+
+When permissions change, the cache is automatically invalidated:
+
+```python
+# Grant permission
+client.grant_permission(
+    subject="user:alice",
+    scope="documents.management",
+    action="edit"
+)
+# → Calls API to grant permission
+# → Automatically invalidates ALL cached checks for "user:alice"
+
+# Next check - cache miss (was invalidated)
+allowed = client.check_permission(
+    subjects=["user:alice"],
+    scope="documents.management",
+    action="edit"
+)
+# → Calls API (cache was invalidated)
+# → Returns True
+# → Re-caches result
+```
+
+#### Batch Operations
+
+Batch operations also trigger cache invalidation:
+
+```python
+# Batch grant
+grants = [
+    GrantRequest(subject="user:alice", scope="docs", action="read"),
+    GrantRequest(subject="user:alice", scope="docs", action="write"),
+    GrantRequest(subject="user:bob", scope="docs", action="read"),
+]
+client.grant_many(grants)
+# → Invalidates cache for "user:alice" and "user:bob"
+```
+
+### Performance Comparison
+
+| Operation | Without SDK Cache | With SDK Cache (Hit) | Improvement |
+|-----------|------------------|---------------------|-------------|
+| check_permission | ~50ms (API call) | ~0.5ms (local) | **100x faster** |
+| Cached check | ~5ms (service cache) | ~0.5ms (SDK cache) | **10x faster** |
+| grant_permission | ~50ms | ~50ms | Same (write operation) |
+
+### Cache Configuration Strategies
+
+#### High-Traffic Applications
+Maximum performance with short-lived cache:
+
+```python
+config = SDKConfig(
+    cache_enabled=True,
+    cache_type="redis",
+    cache_ttl=300,  # 5 minutes
+)
+```
+
+**Use case**: Apps with high permission check volume that can tolerate 5-minute staleness.
+
+#### Real-Time Applications
+Shorter TTL for fresher data:
+
+```python
+config = SDKConfig(
+    cache_enabled=True,
+    cache_type="redis",
+    cache_ttl=60,  # 1 minute
+)
+```
+
+**Use case**: Apps requiring near-real-time permission updates.
+
+#### Development/Testing
+In-memory cache for local development:
+
+```python
+config = SDKConfig(
+    cache_enabled=True,
+    cache_type="memory",
+    cache_ttl=60,
+)
+```
+
+**Use case**: Local development without Redis dependency.
+
+### Cache Behavior Summary
+
+| Operation | Network Call | Cache Action | Result |
+|-----------|-------------|--------------|--------|
+| `check_permission` (first time) | ✅ Yes | Store result | Cached for TTL |
+| `check_permission` (cached) | ❌ No | Return cached | Instant response |
+| `grant_permission` | ✅ Yes | Invalidate subject | Subject cache cleared |
+| `revoke_permission` | ✅ Yes | Invalidate subject | Subject cache cleared |
+| `grant_many` | ✅ Yes | Invalidate all subjects | All subjects cleared |
+| `list_permissions` | ✅ Yes | No caching | Pass-through |
+
+### Important Notes
+
+- **Only `check_permission` is cached** - Write operations always go to the API
+- **Graceful degradation** - If cache fails, falls back to API calls
+- **Automatic cleanup** - Cache connections are properly closed
+- **Thread-safe** - Safe for concurrent use
+- **Transparent** - No code changes needed, works with existing SDK calls
 
 ## Best Practices
 

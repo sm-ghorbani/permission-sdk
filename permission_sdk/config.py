@@ -27,6 +27,11 @@ class SDKConfig:
         pool_maxsize: Maximum number of connections in the pool (default: 10)
         pool_connections: Number of connection pools to maintain (default: 10)
         validate_identifiers: Enable client-side identifier validation (default: True)
+        cache_enabled: Enable SDK-side caching (default: False)
+        cache_type: Cache backend type - "redis", "memory", or "none" (default: "redis")
+        cache_redis_url: Redis URL for cache (required if cache_type="redis")
+        cache_ttl: Cache time-to-live in seconds (default: 300 / 5 minutes)
+        cache_prefix: Cache key prefix (default: "perm_sdk")
 
     Example:
         >>> config = SDKConfig(
@@ -59,6 +64,13 @@ class SDKConfig:
 
     # Validation
     validate_identifiers: bool = True
+
+    # Cache configuration
+    cache_enabled: bool = False
+    cache_type: str = "redis"
+    cache_redis_url: str | None = None
+    cache_ttl: int = 300  # 5 minutes, same as service default
+    cache_prefix: str = "perm_sdk"
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization.
@@ -117,6 +129,19 @@ class SDKConfig:
                 f"pool_connections must be positive, got: {self.pool_connections}"
             )
 
+        # Validate cache settings
+        if self.cache_enabled:
+            if self.cache_type not in ("redis", "memory", "none"):
+                raise ConfigurationError(
+                    f"cache_type must be 'redis', 'memory', or 'none', got: {self.cache_type}"
+                )
+
+            if self.cache_ttl <= 0:
+                raise ConfigurationError(f"cache_ttl must be positive, got: {self.cache_ttl}")
+
+            if not self.cache_prefix:
+                raise ConfigurationError("cache_prefix cannot be empty")
+
     @classmethod
     def from_env(cls, prefix: str = "PERMISSION_SDK_") -> "SDKConfig":
         """Load configuration from environment variables.
@@ -131,6 +156,11 @@ class SDKConfig:
             {prefix}POOL_MAXSIZE: Connection pool max size (optional)
             {prefix}POOL_CONNECTIONS: Number of connection pools (optional)
             {prefix}VALIDATE_IDENTIFIERS: Enable validation (optional, true/false)
+            {prefix}CACHE_ENABLED: Enable SDK caching (optional, true/false)
+            {prefix}CACHE_TYPE: Cache type - redis/memory/none (optional)
+            {prefix}CACHE_REDIS_URL: Redis URL for cache (optional)
+            {prefix}CACHE_TTL: Cache TTL in seconds (optional)
+            {prefix}CACHE_PREFIX: Cache key prefix (optional)
 
         Args:
             prefix: Environment variable prefix (default: "PERMISSION_SDK_")
@@ -171,6 +201,15 @@ class SDKConfig:
             == "true"
         )
 
+        # Cache configuration
+        cache_enabled = (
+            os.getenv(f"{prefix}CACHE_ENABLED", "false").lower() == "true"
+        )
+        cache_type = os.getenv(f"{prefix}CACHE_TYPE", "redis")
+        cache_redis_url = os.getenv(f"{prefix}CACHE_REDIS_URL")
+        cache_ttl = int(os.getenv(f"{prefix}CACHE_TTL", "300"))
+        cache_prefix = os.getenv(f"{prefix}CACHE_PREFIX", "perm_sdk")
+
         return cls(
             base_url=base_url,
             api_key=api_key,
@@ -181,6 +220,11 @@ class SDKConfig:
             pool_maxsize=pool_maxsize,
             pool_connections=pool_connections,
             validate_identifiers=validate_identifiers,
+            cache_enabled=cache_enabled,
+            cache_type=cache_type,
+            cache_redis_url=cache_redis_url,
+            cache_ttl=cache_ttl,
+            cache_prefix=cache_prefix,
         )
 
     def copy(self, **changes: object) -> "SDKConfig":
@@ -207,6 +251,11 @@ class SDKConfig:
             "pool_maxsize": self.pool_maxsize,
             "pool_connections": self.pool_connections,
             "validate_identifiers": self.validate_identifiers,
+            "cache_enabled": self.cache_enabled,
+            "cache_type": self.cache_type,
+            "cache_redis_url": self.cache_redis_url,
+            "cache_ttl": self.cache_ttl,
+            "cache_prefix": self.cache_prefix,
         }
         current.update(changes)
         return SDKConfig(**current)  # type: ignore
