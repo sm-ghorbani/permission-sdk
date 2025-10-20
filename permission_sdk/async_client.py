@@ -10,19 +10,29 @@ from urllib.parse import quote
 from permission_sdk.async_transport import AsyncHTTPTransport
 from permission_sdk.config import SDKConfig
 from permission_sdk.models import (
+    CheckLimitResult,
+    CheckManyLimitsResult,
     CheckRequest,
     CheckResult,
     GrantManyResult,
     GrantRequest,
+    IncrementManyResult,
+    IncrementUsageRequest,
+    IncrementUsageResult,
+    LimitDetail,
+    LimitFilter,
     PaginatedResponse,
     PermissionAssignment,
     PermissionDetail,
     PermissionFilter,
+    ResetUsageResult,
     RevokeRequest,
     Scope,
     ScopeFilter,
+    SingleCheckLimitRequest,
     Subject,
     SubjectFilter,
+    UsageDetail,
 )
 from permission_sdk.models.scopes import ScopeCreate
 from permission_sdk.models.subjects import SubjectCreate
@@ -637,9 +647,7 @@ class AsyncPermissionClient:
 
         return Scope(**response)
 
-    async def list_scopes(
-        self, filters: ScopeFilter | None = None
-    ) -> PaginatedResponse[Scope]:
+    async def list_scopes(self, filters: ScopeFilter | None = None) -> PaginatedResponse[Scope]:
         """List scopes with optional filtering and pagination (async).
 
         Args:
@@ -704,6 +712,441 @@ class AsyncPermissionClient:
         )
 
         return True
+
+    # ==================== Resource Limit Operations ====================
+
+    async def set_limit(
+        self,
+        subject: str,
+        resource_type: str,
+        scope: str,
+        limit_value: int,
+        window_type: str,
+        tenant_id: str | None = None,
+        object_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LimitDetail:
+        """Set or update a resource limit (async).
+
+        This operation is idempotent - if the limit already exists, it will be updated.
+
+        Args:
+            subject: Subject identifier (format: 'type:id')
+            resource_type: Type of resource (e.g., 'project', 'api_call')
+            scope: Scope identifier
+            limit_value: Maximum allowed consumption
+            window_type: Time window ('hourly', 'daily', 'monthly', 'total')
+            tenant_id: Optional tenant identifier
+            object_id: Optional object identifier
+            metadata: Optional metadata dictionary
+
+        Returns:
+            LimitDetail with configured limit information
+
+        Raises:
+            ValidationError: If input parameters are invalid
+            ConflictError: If conflicting window type exists
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> limit = await client.set_limit(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     limit_value=10,
+            ...     window_type="monthly",
+            ...     tenant_id="org:456"
+            ... )
+            >>> print(f"Limit set: {limit.limit_id}")
+        """
+        request_data = {
+            "subject": subject,
+            "resource_type": resource_type,
+            "scope": scope,
+            "limit_value": limit_value,
+            "window_type": window_type,
+            "tenant_id": tenant_id,
+            "object_id": object_id,
+            "metadata": metadata,
+        }
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/set",
+            json=request_data,
+        )
+
+        return LimitDetail(**response)
+
+    async def check_limit(
+        self,
+        subject: str,
+        resource_type: str,
+        scope: str,
+        amount: int = 1,
+        tenant_id: str | None = None,
+        object_id: str | None = None,
+    ) -> CheckLimitResult:
+        """Check if consuming amount would exceed limit (async).
+
+        This is a read-only operation - does NOT increment the counter.
+
+        Args:
+            subject: Subject identifier
+            resource_type: Type of resource
+            scope: Scope identifier
+            amount: Amount to check (default: 1)
+            tenant_id: Optional tenant identifier
+            object_id: Optional object identifier
+
+        Returns:
+            CheckLimitResult with usage information
+
+        Raises:
+            ValidationError: If input parameters are invalid
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> result = await client.check_limit(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     amount=1,
+            ...     tenant_id="org:456"
+            ... )
+            >>> if result.allowed:
+            ...     print(f"Can create project. {result.remaining} remaining.")
+            ... else:
+            ...     print(f"Limit exceeded. Usage: {result.current_usage}/{result.limit}")
+        """
+        request_data = {
+            "subject": subject,
+            "resource_type": resource_type,
+            "scope": scope,
+            "amount": amount,
+            "tenant_id": tenant_id,
+            "object_id": object_id,
+        }
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/check",
+            json=request_data,
+        )
+
+        return CheckLimitResult(**response)
+
+    async def check_many_limits(
+        self,
+        checks: list[SingleCheckLimitRequest],
+    ) -> CheckManyLimitsResult:
+        """Check multiple limits in a single batch request (async).
+
+        Useful for hierarchy checking (e.g., org limit + system limit) or reducing HTTP round trips.
+        All checks are read-only - do NOT increment counters.
+
+        Args:
+            checks: List of limit checks to perform
+
+        Returns:
+            CheckManyLimitsResult with results in same order
+
+        Raises:
+            ValidationError: If any check request is invalid
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> checks = [
+            ...     SingleCheckLimitRequest(
+            ...         check_id="org",
+            ...         subject="user:123",
+            ...         resource_type="project",
+            ...         scope="projects",
+            ...         amount=1,
+            ...         tenant_id="org:A"
+            ...     ),
+            ...     SingleCheckLimitRequest(
+            ...         check_id="system",
+            ...         subject="user:123",
+            ...         resource_type="project",
+            ...         scope="projects",
+            ...         amount=1
+            ...     ),
+            ... ]
+            >>> results = await client.check_many_limits(checks)
+            >>> # Hierarchy enforcement: caller applies logic
+            >>> allowed = all(r.allowed for r in results.results)
+        """
+        request_data = {"checks": [c.model_dump(exclude_none=True) for c in checks]}
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/check-many",
+            json=request_data,
+        )
+
+        return CheckManyLimitsResult(**response)
+
+    async def increment_usage(
+        self,
+        subject: str,
+        resource_type: str,
+        scope: str,
+        amount: int = 1,
+        tenant_id: str | None = None,
+        object_id: str | None = None,
+    ) -> IncrementUsageResult:
+        """Increment resource usage counter (async).
+
+        Args:
+            subject: Subject identifier
+            resource_type: Type of resource
+            scope: Scope identifier
+            amount: Amount to increment (default: 1)
+            tenant_id: Optional tenant identifier
+            object_id: Optional object identifier
+
+        Returns:
+            IncrementUsageResult with updated usage information
+
+        Raises:
+            ValidationError: If input parameters are invalid
+            ResourceNotFoundError: If no limit configured
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> # After creating a project
+            >>> result = await client.increment_usage(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     amount=1,
+            ...     tenant_id="org:456"
+            ... )
+            >>> print(f"New usage: {result.current_usage}/{result.limit}")
+        """
+        request_data = {
+            "subject": subject,
+            "resource_type": resource_type,
+            "scope": scope,
+            "amount": amount,
+            "tenant_id": tenant_id,
+            "object_id": object_id,
+        }
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/increment",
+            json=request_data,
+        )
+
+        return IncrementUsageResult(**response)
+
+    async def increment_many(
+        self,
+        increments: list[IncrementUsageRequest],
+    ) -> IncrementManyResult:
+        """Increment multiple usage counters in a single batch request (async).
+
+        Optimized for hierarchy updates where you need to increment usage at
+        multiple levels (user → org → parent → root). Reduces HTTP round trips.
+
+        Args:
+            increments: List of usage increments to perform
+
+        Returns:
+            IncrementManyResult with results in same order
+
+        Raises:
+            ValidationError: If any increment request is invalid
+            ResourceNotFoundError: If any limit not configured
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> increments = [
+            ...     IncrementUsageRequest(
+            ...         subject="user:123",
+            ...         resource_type="scan",
+            ...         scope="org:A",
+            ...         amount=1,
+            ...         tenant_id="org:A"
+            ...     ),
+            ...     IncrementUsageRequest(
+            ...         subject="org:A",
+            ...         resource_type="scan",
+            ...         scope="system",
+            ...         amount=1
+            ...     ),
+            ... ]
+            >>> results = await client.increment_many(increments)
+            >>> for result in results.results:
+            ...     print(f"New usage: {result.current_usage}/{result.limit}")
+        """
+        request_data = {"increments": [inc.model_dump(exclude_none=True) for inc in increments]}
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/increment-many",
+            json=request_data,
+        )
+
+        return IncrementManyResult(**response)
+
+    async def get_usage(
+        self,
+        subject: str,
+        resource_type: str,
+        scope: str,
+        tenant_id: str | None = None,
+        object_id: str | None = None,
+    ) -> UsageDetail:
+        """Get current usage information for a resource (async).
+
+        Args:
+            subject: Subject identifier
+            resource_type: Type of resource
+            scope: Scope identifier
+            tenant_id: Optional tenant identifier
+            object_id: Optional object identifier
+
+        Returns:
+            UsageDetail with current usage information
+
+        Raises:
+            ResourceNotFoundError: If no limit configured
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> usage = await client.get_usage(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     tenant_id="org:456"
+            ... )
+            >>> print(f"Usage: {usage.current_usage}/{usage.limit}")
+            >>> print(f"Resets at: {usage.window_end}")
+        """
+        params = {
+            "subject": subject,
+            "resource_type": resource_type,
+            "scope": scope,
+        }
+        if tenant_id:
+            params["tenant_id"] = tenant_id
+        if object_id:
+            params["object_id"] = object_id
+
+        response = await self.transport.request(
+            "GET",
+            "/api/v1/limits/usage",
+            params=params,
+        )
+
+        return UsageDetail(**response)
+
+    async def reset_usage(
+        self,
+        subject: str,
+        resource_type: str,
+        scope: str,
+        tenant_id: str | None = None,
+        object_id: str | None = None,
+    ) -> ResetUsageResult:
+        """Manually reset usage counter to 0 (async).
+
+        Useful for admin overrides, testing, or subscription upgrades.
+
+        Args:
+            subject: Subject identifier
+            resource_type: Type of resource
+            scope: Scope identifier
+            tenant_id: Optional tenant identifier
+            object_id: Optional object identifier
+
+        Returns:
+            ResetUsageResult with previous and current usage
+
+        Raises:
+            ResourceNotFoundError: If no usage record found
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> # Admin override or subscription upgrade
+            >>> result = await client.reset_usage(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     tenant_id="org:456"
+            ... )
+            >>> print(f"Reset from {result.previous_usage} to {result.current_usage}")
+        """
+        request_data = {
+            "subject": subject,
+            "resource_type": resource_type,
+            "scope": scope,
+            "tenant_id": tenant_id,
+            "object_id": object_id,
+        }
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/reset",
+            json=request_data,
+        )
+
+        return ResetUsageResult(**response)
+
+    async def list_limits(
+        self,
+        filters: LimitFilter | None = None,
+    ) -> PaginatedResponse[LimitDetail]:
+        """List resource limits with optional filtering and pagination (async).
+
+        Args:
+            filters: Optional filter criteria
+
+        Returns:
+            Paginated response with limit details
+
+        Raises:
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> filters = LimitFilter(
+            ...     subject="user:123",
+            ...     tenant_id="org:456",
+            ...     limit=50
+            ... )
+            >>> response = await client.list_limits(filters)
+            >>> print(f"Total limits: {response.total}")
+            >>> for limit in response.items:
+            ...     print(f"{limit.resource_type}: {limit.limit_value} ({limit.window_type})")
+        """
+        params = {}
+        if filters:
+            filter_dict = filters.model_dump(exclude_none=True)
+            params = {k: str(v) for k, v in filter_dict.items()}
+
+        response = await self.transport.request(
+            "GET",
+            "/api/v1/limits",
+            params=params,
+        )
+
+        return PaginatedResponse[LimitDetail](
+            total=response["total"],
+            limit=response["limit"],
+            offset=response["offset"],
+            items=[LimitDetail(**lim) for lim in response["limits"]],
+        )
 
     # ==================== Client Lifecycle ====================
 

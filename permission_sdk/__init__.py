@@ -35,6 +35,7 @@ from permission_sdk.client import PermissionClient
 from permission_sdk.config import SDKConfig
 from permission_sdk.exceptions import (
     AuthenticationError,
+    ConflictError,
     ConfigurationError,
     NetworkError,
     PermissionSDKError,
@@ -45,19 +46,32 @@ from permission_sdk.exceptions import (
     ValidationError,
 )
 from permission_sdk.models import (
+    CheckLimitRequest,
+    CheckLimitResult,
+    CheckManyLimitsResult,
     CheckRequest,
     CheckResult,
     GrantManyResult,
     GrantRequest,
+    IncrementUsageRequest,
+    IncrementUsageResult,
+    LimitDetail,
+    LimitFilter,
     PaginatedResponse,
     PermissionAssignment,
     PermissionDetail,
     PermissionFilter,
+    ResetUsageRequest,
+    ResetUsageResult,
     RevokeRequest,
     Scope,
     ScopeFilter,
+    SetLimitRequest,
+    SingleCheckLimitRequest,
+    SingleCheckLimitResult,
     Subject,
     SubjectFilter,
+    UsageDetail,
 )
 
 __all__ = [
@@ -74,11 +88,12 @@ __all__ = [
     "AuthenticationError",
     "ValidationError",
     "ResourceNotFoundError",
+    "ConflictError",
     "ServerError",
     "NetworkError",
     "RateLimitError",
     "TimeoutError",
-    # Models
+    # Models - Permissions
     "PermissionAssignment",
     "PermissionDetail",
     "GrantRequest",
@@ -87,9 +102,26 @@ __all__ = [
     "CheckResult",
     "GrantManyResult",
     "PermissionFilter",
+    # Models - Subjects
     "Subject",
     "SubjectFilter",
+    # Models - Scopes
     "Scope",
     "ScopeFilter",
+    # Models - Resource Limits
+    "LimitDetail",
+    "SetLimitRequest",
+    "CheckLimitRequest",
+    "CheckLimitResult",
+    "SingleCheckLimitRequest",
+    "SingleCheckLimitResult",
+    "CheckManyLimitsResult",
+    "IncrementUsageRequest",
+    "IncrementUsageResult",
+    "UsageDetail",
+    "ResetUsageRequest",
+    "ResetUsageResult",
+    "LimitFilter",
+    # Models - Common
     "PaginatedResponse",
 ]

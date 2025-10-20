@@ -16,6 +16,7 @@ from permission_sdk.cache.provider import create_cache_service_async
 from permission_sdk.config import SDKConfig
 from permission_sdk.exceptions import (
     AuthenticationError,
+    ConflictError,
     NetworkError,
     RateLimitError,
     ResourceNotFoundError,
@@ -242,10 +243,14 @@ class AsyncHTTPTransport:
             tenant_id = json_data.get("tenant_id")
             object_id = json_data.get("object_id")
 
+            # Skip cache if scope or action missing
+            if not scope or not action:
+                return await self._do_request(method, endpoint, json_data, params)
+
             # Try cache first
             try:
                 cached_result = await self.cache_manager.get_check_result(
-                    subjects, scope, action, tenant_id, object_id
+                    subjects, str(scope), str(action), tenant_id, object_id
                 )
 
                 if cached_result is not None:
@@ -261,12 +266,12 @@ class AsyncHTTPTransport:
         result = await self._do_request(method, endpoint, json_data, params)
 
         # Cache the result for single checks
-        if "/permissions/check-many" not in endpoint and self.cache_manager:
+        if "/permissions/check-many" not in endpoint and self.cache_manager and scope and action:
             try:
                 await self.cache_manager.set_check_result(
                     subjects,
-                    scope,
-                    action,
+                    str(scope),
+                    str(action),
                     result.get("allowed", False),
                     tenant_id,
                     object_id,
@@ -386,7 +391,8 @@ class AsyncHTTPTransport:
                 if response.status_code == 204:  # No content
                     return {}
 
-                return response.json()
+                json_response: dict[str, Any] = response.json()
+                return json_response
 
             except httpx.TimeoutException as e:
                 if attempt == self.config.max_retries:
@@ -438,6 +444,7 @@ class AsyncHTTPTransport:
             AuthenticationError: For 401 status
             ValidationError: For 400 status
             ResourceNotFoundError: For 404 status
+            ConflictError: For 409 status
             RateLimitError: For 429 status
             ServerError: For 500-599 status
         """
@@ -446,6 +453,7 @@ class AsyncHTTPTransport:
             return
 
         # Try to extract error details from response
+        error_data: dict | None = None
         try:
             error_data = response.json()
             error_message = error_data.get("detail", response.text)
@@ -474,6 +482,13 @@ class AsyncHTTPTransport:
             raise ResourceNotFoundError(
                 error_message or "Resource not found",
                 resource_type=error_type,
+                status_code=response.status_code,
+            )
+
+        if response.status_code == 409:
+            raise ConflictError(
+                error_message or "Resource conflict occurred",
+                response=error_data,
                 status_code=response.status_code,
             )
 
