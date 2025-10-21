@@ -191,6 +191,9 @@ class LimitDetail(BaseModel):
         created_at: When limit was created
         updated_at: When limit was last updated
         metadata: Optional additional metadata
+        window_changed: Whether the window_type was changed (usage was reset)
+        previous_window_type: Previous window_type if changed
+        previous_usage: Previous usage value before reset
 
     Example:
         >>> limit = LimitDetail(
@@ -201,7 +204,8 @@ class LimitDetail(BaseModel):
         ...     limit_value=10,
         ...     window_type="monthly",
         ...     created_at=datetime.now(),
-        ...     updated_at=datetime.now()
+        ...     updated_at=datetime.now(),
+        ...     window_changed=False
         ... )
     """
 
@@ -216,6 +220,15 @@ class LimitDetail(BaseModel):
     created_at: datetime = Field(..., description="When limit was created")
     updated_at: datetime = Field(..., description="When limit was last updated")
     metadata: dict[str, Any] | None = Field(default=None, description="Additional metadata")
+    window_changed: bool = Field(
+        default=False, description="Whether the window_type was changed (usage was reset)"
+    )
+    previous_window_type: str | None = Field(
+        default=None, description="Previous window_type if changed"
+    )
+    previous_usage: int | None = Field(
+        default=None, description="Previous usage value before reset"
+    )
 
 
 class CheckLimitResult(BaseModel):

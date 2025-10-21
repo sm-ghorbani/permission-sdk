@@ -730,6 +730,10 @@ class AsyncPermissionClient:
 
         This operation is idempotent - if the limit already exists, it will be updated.
 
+        If the window_type is changed, all existing usage records will be automatically
+        deleted and usage will be reset to 0. The response will indicate if the window
+        was changed and what the previous usage was.
+
         Args:
             subject: Subject identifier (format: 'type:id')
             resource_type: Type of resource (e.g., 'project', 'api_call')
@@ -741,11 +745,10 @@ class AsyncPermissionClient:
             metadata: Optional metadata dictionary
 
         Returns:
-            LimitDetail with configured limit information
+            LimitDetail with configured limit information and window change metadata
 
         Raises:
             ValidationError: If input parameters are invalid
-            ConflictError: If conflicting window type exists
             AuthenticationError: If API key is invalid
             ServerError: If server error occurs
 
@@ -759,6 +762,8 @@ class AsyncPermissionClient:
             ...     tenant_id="org:456"
             ... )
             >>> print(f"Limit set: {limit.limit_id}")
+            >>> if limit.window_changed:
+            ...     print(f"Window changed from {limit.previous_window_type}, usage was {limit.previous_usage}")
         """
         request_data = {
             "subject": subject,

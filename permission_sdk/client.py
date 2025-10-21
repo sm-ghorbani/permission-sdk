@@ -774,6 +774,12 @@ class PermissionClient:
 
         This operation is idempotent - if the limit already exists, it will be updated.
 
+        **Window Type Changes**: If you update a limit with a different window_type,
+        the service will automatically reset usage to 0 and return metadata about the change:
+        - window_changed: True if window type was changed
+        - previous_window_type: The old window type
+        - previous_usage: The usage count before reset
+
         Args:
             subject: Subject identifier (format: 'type:id')
             resource_type: Type of resource (e.g., 'project', 'api_call')
@@ -789,7 +795,6 @@ class PermissionClient:
 
         Raises:
             ValidationError: If input parameters are invalid
-            ConflictError: If conflicting window type exists
             AuthenticationError: If API key is invalid
             ServerError: If server error occurs
 
@@ -803,6 +808,19 @@ class PermissionClient:
             ...     tenant_id="org:456"
             ... )
             >>> print(f"Limit set: {limit.limit_id}")
+            >>>
+            >>> # Changing window type resets usage automatically
+            >>> updated = client.set_limit(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     limit_value=50,
+            ...     window_type="daily",  # Changed from monthly to daily
+            ...     tenant_id="org:456"
+            ... )
+            >>> if updated.window_changed:
+            ...     print(f"Window changed from {updated.previous_window_type}")
+            ...     print(f"Previous usage: {updated.previous_usage}")
         """
         request_data = {
             "subject": subject,

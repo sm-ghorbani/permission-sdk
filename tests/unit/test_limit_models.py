@@ -350,6 +350,48 @@ class TestLimitDetail:
         assert detail.object_id == "workspace:123"
         assert detail.metadata == metadata
 
+    def test_limit_detail_with_window_change(self) -> None:
+        """Test limit detail with window change metadata."""
+        now = datetime.now()
+
+        detail = LimitDetail(
+            limit_id=789,
+            subject="user:alice",
+            resource_type="project",
+            scope="org:acme",
+            limit_value=50,
+            window_type="daily",
+            created_at=now,
+            updated_at=now,
+            window_changed=True,
+            previous_window_type="monthly",
+            previous_usage=12,
+        )
+
+        assert detail.window_changed is True
+        assert detail.previous_window_type == "monthly"
+        assert detail.previous_usage == 12
+
+    def test_limit_detail_default_window_change_fields(self) -> None:
+        """Test that window change fields have proper defaults."""
+        now = datetime.now()
+
+        detail = LimitDetail(
+            limit_id=100,
+            subject="user:bob",
+            resource_type="scan",
+            scope="org:test",
+            limit_value=20,
+            window_type="hourly",
+            created_at=now,
+            updated_at=now,
+        )
+
+        # Default values for window change fields
+        assert detail.window_changed is False
+        assert detail.previous_window_type is None
+        assert detail.previous_usage is None
+
 
 class TestCheckLimitResult:
     """Tests for CheckLimitResult response model."""
