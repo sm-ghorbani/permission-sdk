@@ -10,6 +10,8 @@ from urllib.parse import quote
 from permission_sdk.async_transport import AsyncHTTPTransport
 from permission_sdk.config import SDKConfig
 from permission_sdk.models import (
+    CheckAndIncrementManyResult,
+    CheckAndIncrementResult,
     CheckLimitResult,
     CheckManyLimitsResult,
     CheckRequest,
@@ -29,6 +31,7 @@ from permission_sdk.models import (
     RevokeRequest,
     Scope,
     ScopeFilter,
+    SingleCheckAndIncrementRequest,
     SingleCheckLimitRequest,
     Subject,
     SubjectFilter,
@@ -724,15 +727,18 @@ class AsyncPermissionClient:
         window_type: str,
         tenant_id: str | None = None,
         object_id: str | None = None,
+        expires_at: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> LimitDetail:
         """Set or update a resource limit (async).
 
         This operation is idempotent - if the limit already exists, it will be updated.
 
-        If the window_type is changed, all existing usage records will be automatically
-        deleted and usage will be reset to 0. The response will indicate if the window
-        was changed and what the previous usage was.
+        **Window Type Changes**: If you update a limit with a different window_type,
+        the service will automatically reset usage to 0 and return metadata about the change:
+        - window_changed: True if window type was changed
+        - previous_window_type: The old window type
+        - previous_usage: The usage count before reset
 
         Args:
             subject: Subject identifier (format: 'type:id')
@@ -742,6 +748,7 @@ class AsyncPermissionClient:
             window_type: Time window ('hourly', 'daily', 'monthly', 'total')
             tenant_id: Optional tenant identifier
             object_id: Optional object identifier
+            expires_at: Optional expiration datetime (ISO 8601 format) for temporary limits
             metadata: Optional metadata dictionary
 
         Returns:
@@ -759,11 +766,23 @@ class AsyncPermissionClient:
             ...     scope="projects",
             ...     limit_value=10,
             ...     window_type="monthly",
-            ...     tenant_id="org:456"
+            ...     tenant_id="org:456",
+            ...     expires_at="2025-12-31T23:59:59Z"
             ... )
             >>> print(f"Limit set: {limit.limit_id}")
-            >>> if limit.window_changed:
-            ...     print(f"Window changed from {limit.previous_window_type}, usage was {limit.previous_usage}")
+            >>>
+            >>> # Changing window type resets usage automatically
+            >>> updated = await client.set_limit(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     limit_value=50,
+            ...     window_type="daily",  # Changed from monthly to daily
+            ...     tenant_id="org:456"
+            ... )
+            >>> if updated.window_changed:
+            ...     print(f"Window changed from {updated.previous_window_type}")
+            ...     print(f"Previous usage: {updated.previous_usage}")
         """
         request_data = {
             "subject": subject,
@@ -773,6 +792,7 @@ class AsyncPermissionClient:
             "window_type": window_type,
             "tenant_id": tenant_id,
             "object_id": object_id,
+            "expires_at": expires_at,
             "metadata": metadata,
         }
 
@@ -1001,6 +1021,161 @@ class AsyncPermissionClient:
         )
 
         return IncrementManyResult(**response)
+
+    async def check_and_increment(
+        self,
+        subject: str,
+        resource_type: str,
+        scope: str,
+        amount: int = 1,
+        tenant_id: str | None = None,
+        object_id: str | None = None,
+    ) -> CheckAndIncrementResult:
+        """Atomically check limit and increment if allowed (async).
+
+        This is a critical operation that prevents Time-Of-Check-Time-Of-Use (TOCTOU)
+        race conditions. Use this instead of separate check + increment calls to ensure
+        the limit is never exceeded even under high concurrency.
+
+        The operation is atomic: if the limit would be exceeded, the usage is NOT incremented.
+
+        Args:
+            subject: Subject identifier
+            resource_type: Type of resource
+            scope: Scope identifier
+            amount: Amount to consume (default: 1)
+            tenant_id: Optional tenant identifier
+            object_id: Optional object identifier
+
+        Returns:
+            CheckAndIncrementResult with operation outcome
+
+        Raises:
+            ValidationError: If input parameters are invalid
+            ResourceNotFoundError: If no limit configured
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> # CORRECT: Atomic check-and-increment (no race condition)
+            >>> result = await client.check_and_increment(
+            ...     subject="user:123",
+            ...     resource_type="project",
+            ...     scope="projects",
+            ...     amount=1,
+            ...     tenant_id="org:456"
+            ... )
+            >>> if result.allowed:
+            ...     # Usage was incremented, proceed with operation
+            ...     await create_project()
+            ...     print(f"Project created. {result.remaining} remaining.")
+            ... else:
+            ...     # Limit would be exceeded, usage was NOT incremented
+            ...     print(f"Cannot create project. Limit reached.")
+            >>>
+            >>> # INCORRECT: Separate check + increment (vulnerable to race conditions)
+            >>> # Don't do this - two concurrent requests could both pass the check
+            >>> # and then both increment, exceeding the limit!
+            >>> check_result = await client.check_limit(...)
+            >>> if check_result.allowed:
+            ...     await create_project()
+            ...     await client.increment_usage(...)  # RACE CONDITION HERE!
+        """
+        request_data = {
+            "subject": subject,
+            "resource_type": resource_type,
+            "scope": scope,
+            "amount": amount,
+            "tenant_id": tenant_id,
+            "object_id": object_id,
+        }
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/check-and-increment",
+            json=request_data,
+        )
+
+        return CheckAndIncrementResult(**response)
+
+    async def check_and_increment_many(
+        self,
+        checks: list[SingleCheckAndIncrementRequest],
+    ) -> CheckAndIncrementManyResult:
+        """Atomically check and increment multiple limits with TRUE transactional behavior (async).
+
+        This operation uses two-phase commit semantics for hierarchy enforcement:
+
+        **PHASE 1: Check ALL limits** (no increments)
+        - The service evaluates each limit against current usage
+        - All check results are collected
+
+        **PHASE 2: Increment ALL or NONE** (true transactional behavior)
+        - If ANY limit would be exceeded → increment NONE, all return allowed=False
+        - If ALL limits pass → increment ALL atomically, all return allowed=True
+
+        This is essential for:
+        1. **Hierarchy enforcement**: Check limits at multiple levels (user → org → system)
+           - Either all levels pass and all increment, or any level fails and none increment
+           - No partial increments that corrupt hierarchy invariants
+        2. **Multi-resource operations**: Atomic consumption of multiple resource types
+        3. **Reducing HTTP round trips**: Single request for all checks
+
+        **IMPORTANT**: The operation is truly transactional - you will NEVER get partial
+        increments. If ANY check fails, NONE are incremented. No manual rollback needed.
+
+        Args:
+            checks: List of check-and-increment operations to perform
+
+        Returns:
+            CheckAndIncrementManyResult with results in same order.
+            If ANY check would exceed, ALL results have allowed=False, incremented=False.
+            If ALL checks pass, ALL results have allowed=True, incremented=True.
+
+        Raises:
+            ValidationError: If any check request is invalid
+            ResourceNotFoundError: If any limit not configured
+            AuthenticationError: If API key is invalid
+            ServerError: If server error occurs
+
+        Example:
+            >>> # CORRECT: Hierarchy enforcement with transactional guarantees
+            >>> checks = [
+            ...     SingleCheckAndIncrementRequest(
+            ...         subject="user:123",
+            ...         resource_type="scan",
+            ...         scope="org:A",
+            ...         amount=1,
+            ...         tenant_id="org:A"
+            ...     ),
+            ...     SingleCheckAndIncrementRequest(
+            ...         subject="org:A",
+            ...         resource_type="scan",
+            ...         scope="system",
+            ...         amount=1
+            ...     ),
+            ... ]
+            >>> results = await client.check_and_increment_many(checks)
+            >>>
+            >>> # True transactional behavior - all or nothing
+            >>> if all(r.allowed for r in results.results):
+            ...     # ALL limits passed AND ALL were incremented - safe to proceed
+            ...     await perform_scan()
+            ...     print("Scan started successfully")
+            ... else:
+            ...     # At least one limit exceeded - NONE were incremented
+            ...     # No rollback needed - operation is atomic
+            ...     print("Quota exceeded - operation denied")
+        """
+        request_data = {"checks": [c.model_dump(exclude_none=True) for c in checks]}
+
+        response = await self.transport.request(
+            "POST",
+            "/api/v1/limits/check-and-increment-many",
+            json=request_data,
+        )
+
+        return CheckAndIncrementManyResult(**response)
 
     async def get_usage(
         self,

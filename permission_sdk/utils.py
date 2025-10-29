@@ -9,7 +9,8 @@ from typing import Any
 from permission_sdk.exceptions import ValidationError
 
 # Regular expressions for validation
-SUBJECT_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+:[a-zA-Z0-9_@.\-]+$")
+# Colon is optional - can be "type:id" or just "identifier"
+SUBJECT_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+(?::[a-zA-Z0-9_@.\-]+)?$")
 SCOPE_PATTERN = re.compile(r"^[a-z0-9_.:.-]+$")
 ACTION_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
@@ -17,9 +18,13 @@ ACTION_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 def validate_subject_identifier(identifier: str) -> None:
     """Validate subject identifier format.
 
-    Subject identifiers must follow the format 'type:id' where:
-    - type: alphanumeric, underscore, or hyphen
-    - id: alphanumeric, underscore, hyphen, dot, or @ symbol
+    Subject identifiers can be either:
+    - Single-word: 'system', 'admin', 'guest'
+    - Type:ID format: 'user:john.doe', 'role:editor', 'org:123'
+
+    Allowed characters:
+    - type/identifier: alphanumeric, underscore, or hyphen
+    - id (after colon): alphanumeric, underscore, hyphen, dot, or @ symbol
 
     Args:
         identifier: Subject identifier to validate
@@ -28,9 +33,10 @@ def validate_subject_identifier(identifier: str) -> None:
         ValidationError: If identifier format is invalid
 
     Example:
-        >>> validate_subject_identifier("user:john.doe")  # Valid
-        >>> validate_subject_identifier("role:editor")    # Valid
-        >>> validate_subject_identifier("invalid")        # Raises ValidationError
+        >>> validate_subject_identifier("system")         # Valid (single-word)
+        >>> validate_subject_identifier("user:john.doe")  # Valid (type:id)
+        >>> validate_subject_identifier("role:editor")    # Valid (type:id)
+        >>> validate_subject_identifier("user@123")       # Invalid (@ not allowed before colon)
     """
     if not identifier:
         raise ValidationError("Subject identifier cannot be empty", field="subject")
@@ -44,14 +50,7 @@ def validate_subject_identifier(identifier: str) -> None:
     if not SUBJECT_PATTERN.match(identifier):
         raise ValidationError(
             f"Invalid subject identifier format: '{identifier}'. "
-            "Expected format: 'type:id' (e.g., 'user:123', 'role:editor')",
-            field="subject",
-        )
-
-    # Ensure it contains a colon separator
-    if ":" not in identifier:
-        raise ValidationError(
-            f"Subject identifier must contain ':' separator: '{identifier}'",
+            "Expected format: 'identifier' or 'type:id' (e.g., 'system', 'user:123', 'role:editor')",
             field="subject",
         )
 
@@ -189,10 +188,10 @@ def parse_subject_identifier(identifier: str) -> tuple[str, str]:
     """Parse subject identifier into type and ID components.
 
     Args:
-        identifier: Subject identifier (format: 'type:id')
+        identifier: Subject identifier (format: 'type:id' or single-word)
 
     Returns:
-        Tuple of (type, id)
+        Tuple of (type, id). For single-word identifiers, returns (identifier, identifier)
 
     Raises:
         ValidationError: If identifier format is invalid
@@ -201,14 +200,16 @@ def parse_subject_identifier(identifier: str) -> tuple[str, str]:
         >>> subject_type, subject_id = parse_subject_identifier("user:john.doe")
         >>> print(subject_type)  # "user"
         >>> print(subject_id)    # "john.doe"
+
+        >>> subject_type, subject_id = parse_subject_identifier("system")
+        >>> print(subject_type)  # "system"
+        >>> print(subject_id)    # "system"
     """
     validate_subject_identifier(identifier)
 
     parts = identifier.split(":", 1)
-    if len(parts) != 2:
-        raise ValidationError(
-            f"Invalid subject identifier format: '{identifier}'",
-            field="subject",
-        )
+    if len(parts) == 1:
+        # Single-word identifier like "system", "admin", "guest"
+        return parts[0], parts[0]
 
     return parts[0], parts[1]

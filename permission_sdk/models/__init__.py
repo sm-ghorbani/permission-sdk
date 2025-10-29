@@ -5,6 +5,10 @@ This package contains all Pydantic models used for request/response serializatio
 
 from permission_sdk.models.common import PaginatedResponse
 from permission_sdk.models.limits import (
+    CheckAndIncrementManyRequest,
+    CheckAndIncrementManyResult,
+    CheckAndIncrementRequest,
+    CheckAndIncrementResult,
     CheckLimitRequest,
     CheckLimitResult,
     CheckManyLimitsRequest,
@@ -18,6 +22,7 @@ from permission_sdk.models.limits import (
     ResetUsageRequest,
     ResetUsageResult,
     SetLimitRequest,
+    SingleCheckAndIncrementRequest,
     SingleCheckLimitRequest,
     SingleCheckLimitResult,
     UsageDetail,
@@ -62,6 +67,11 @@ __all__ = [
     "SingleCheckLimitResult",
     "CheckManyLimitsRequest",
     "CheckManyLimitsResult",
+    "CheckAndIncrementRequest",
+    "CheckAndIncrementResult",
+    "SingleCheckAndIncrementRequest",
+    "CheckAndIncrementManyRequest",
+    "CheckAndIncrementManyResult",
     "IncrementUsageRequest",
     "IncrementUsageResult",
     "IncrementManyRequest",
